@@ -12,9 +12,9 @@
 
 #pragma once
 
-#include "include/traffic_cop/traffic_cop.h"
+#include "traffic_cop/traffic_cop.h"
 #include "marshal.h"
-#include "type/types.h"
+#include "common/internal_types.h"
 // Packet content macros
 
 namespace peloton {
@@ -36,6 +36,8 @@ class ProtocolHandler {
   /* Manage the startup packet */
   //  bool ManageStartupPacket();
   virtual void SendInitialResponse();
+
+  virtual bool ProcessInitialPacket(InputPacket* pkt, Client client, bool ssl_able, bool& ssl_sent, bool& finish_startup_packet) = 0;
 
   virtual ProcessResult Process(Buffer &rbuf, const size_t thread_id);
 

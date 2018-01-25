@@ -21,9 +21,10 @@
 #include "common/cache.h"
 #include "common/portal.h"
 #include "common/statement.h"
+#include "common/statement_cache.h"
 #include "traffic_cop/traffic_cop.h"
 #include "protocol_handler.h"
-#include "type/types.h"
+#include "common/internal_types.h"
 
 // Packet content macros
 #define NULL_CONTENT_SIZE -1
@@ -52,18 +53,6 @@ class PostgresProtocolHandler: public ProtocolHandler {
   void SendInitialResponse();
   void Reset();
 
-
-  // Ugh... this should not be here but we have no choice...
-  void ReplanPreparedStatement(Statement* statement);
-
-  // Check existence of statement in cache by name
-  // Return true if exists
-  bool ExistCachedStatement(std::string statement_name) {
-    auto statement_cache_itr = statement_cache_.find(statement_name);
-    return statement_cache_itr != statement_cache_.end();
-  }
-
-
   void GetResult();
 
   //===--------------------------------------------------------------------===//
@@ -89,6 +78,16 @@ class PostgresProtocolHandler: public ProtocolHandler {
   // Extracts the contents of Postgres packet from the read socket buffer
   static bool ReadPacket(Buffer &rbuf, InputPacket &rpkt);
 
+  /* Routine to deal with the first packet from the client */
+  bool ProcessInitialPacket(InputPacket* pkt, Client client, bool ssl_able, bool& ssl_sent, bool& finish_startup_packet);
+
+  /* Routine to deal with SSL request message */
+  void ProcessSSLRequestPacket(bool ssl_able, bool& ssl_handshake);
+
+  /* Routine to deal with general Startup message */
+  bool ProcessStartupPacket(InputPacket* pkt, int32_t proto_version, Client client, bool& finish_startup_packet);
+
+  bool GetFinishedStartupPacket();
 
  private:
 
@@ -110,12 +109,11 @@ class PostgresProtocolHandler: public ProtocolHandler {
   void PutTupleDescriptor(const std::vector<FieldInfo>& tuple_descriptor);
 
   // Send each row, one packet at a time, used by SELECT queries
-  void SendDataRows(std::vector<StatementResult>& results, int colcount,
-                    int& rows_affected);
+  void SendDataRows(std::vector<ResultValue>& results, int colcount);
 
   // Used to send a packet that indicates the completion of a query. Also has
   // txn state mgmt
-  void CompleteCommand(const std::string& query_type_string, const QueryType& query_type, int rows);
+  void CompleteCommand(const QueryType& query_type, int rows);
 
   // Specific response for empty or NULL queries
   void SendEmptyQueryResponse();
@@ -153,6 +151,7 @@ class PostgresProtocolHandler: public ProtocolHandler {
   void ExecExecuteMessageGetResult(ResultType status);
 
   void ExecQueryMessageGetResult(ResultType status);
+
   //===--------------------------------------------------------------------===//
   // MEMBERS
   //===--------------------------------------------------------------------===//
@@ -160,7 +159,6 @@ class PostgresProtocolHandler: public ProtocolHandler {
   NetworkProtocolType protocol_type_;
 
   // Manage standalone queries
-  std::shared_ptr<Statement> unnamed_statement_;
 
   // The result-column format code
   std::vector<int> result_format_;
@@ -174,13 +172,7 @@ class PostgresProtocolHandler: public ProtocolHandler {
   QueryType skipped_query_type_;
 
   // Statement cache
-  // StatementName -> Statement
-  Cache<std::string, Statement> statement_cache_;
-  // TableOid -> Statements
-  // FIXME: This table statement cache is not in sync with the other cache.
-  // That means if something gets thrown out of the statement cache it is not
-  // automatically evicted from this cache.
-  std::unordered_map<oid_t, std::vector<Statement*>> table_statement_cache_;
+  StatementCache statement_cache_;
 
   //  Portals
   std::unordered_map<std::string, std::shared_ptr<Portal>> portals_;
@@ -197,26 +189,6 @@ class PostgresProtocolHandler: public ProtocolHandler {
   // in stat table is destroyed
   std::unordered_map<std::string, stats::QueryMetric::QueryParamBuf>
       statement_param_types_;
-
-  //TODO: should this stay in traffic_cop?
-  std::shared_ptr<Statement> statement_;
-
-  std::string error_message_;
-
-  //TODO: shoud this stay in traffic_cop?
-  std::vector<StatementResult> results_;
-
-  //TODO: should this stay in traffic_cop?
-  int rows_affected_ = 0;
-
-  //TODO: should this stay in traffic_cop?
-  std::vector<type::Value> param_values_;
-
-  //TODO: should this stay in traffic_cop?
-  QueryType query_type_;
-
-  //TODO: should this stay in traffic_cop?
-  std::string query_;
 
   //===--------------------------------------------------------------------===//
   // STATIC DATA

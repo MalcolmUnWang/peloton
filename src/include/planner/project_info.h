@@ -17,23 +17,29 @@
 
 #include "expression/abstract_expression.h"
 #include "storage/tuple.h"
+#include "util/hash_util.h"
 
 namespace peloton {
+
+namespace expression {
+class Parameter;
+}
+
 namespace planner {
 
 /**
  * @brief A class for representing projection information.
  *
- * The information is stored in two parts.
+ * The information is stored in two parts:
  * 1) A target_list stores non-trivial projections that can be calculated from
- *expressions.
+ *    expressions.
  * 2) A direct_map_list stores projections that is simply reorder of attributes
- *in the input.
+ *    in the input.
  *
  * We separate it in this way for two reasons:
- * i) Postgres does the same thing;
+ * i)  Postgres does the same thing;
  * ii) It makes it possible to use a more efficient executor to handle pure
- * direct map projections.
+ *     direct map projections.
  *
  * NB: in case of a constant-valued projection, it is still under the umbrella
  * of \b target_list, though it sounds simple enough.
@@ -66,7 +72,7 @@ class ProjectInfo {
 
   const DirectMapList &GetDirectMapList() const { return direct_map_list_; }
 
-  bool isNonTrivial() const { return target_list_.size() > 0; };
+  bool IsNonTrivial() const { return !target_list_.empty(); };
 
   bool Evaluate(storage::Tuple *dest, const AbstractTuple *tuple1,
                 const AbstractTuple *tuple2,
@@ -95,6 +101,21 @@ class ProjectInfo {
     return std::unique_ptr<ProjectInfo>(
         new ProjectInfo(std::move(new_target_list), std::move(new_map_list)));
   }
+
+  hash_t Hash() const;
+
+  bool operator==(const ProjectInfo &rhs) const;
+  bool operator!=(const ProjectInfo &rhs) const { return !(*this == rhs); }
+
+  virtual void VisitParameters(codegen::QueryParametersMap &map,
+      std::vector<peloton::type::Value> &values,
+      const std::vector<peloton::type::Value> &values_from_user);
+
+ private:
+  bool AreEqual(const planner::DerivedAttribute &A,
+                const planner::DerivedAttribute &B) const;
+
+  hash_t Hash(const planner::DerivedAttribute &attribute) const;
 
  private:
   TargetList target_list_;

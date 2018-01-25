@@ -12,11 +12,12 @@
 
 #include "codegen/type/timestamp_type.h"
 
-#include "codegen/value.h"
 #include "codegen/proxy/values_runtime_proxy.h"
+#include "codegen/proxy/date_functions_proxy.h"
 #include "codegen/type/boolean_type.h"
 #include "codegen/type/date_type.h"
 #include "codegen/type/integer_type.h"
+#include "codegen/value.h"
 #include "type/timestamp_type.h"
 
 namespace peloton {
@@ -25,13 +26,15 @@ namespace type {
 
 namespace {
 
-//===----------------------------------------------------------------------===//
-// Date casting rules
-//
-// We do DATE -> {TIMESTAMP, VARCHAR}
-//===----------------------------------------------------------------------===//
+////////////////////////////////////////////////////////////////////////////////
+///
+/// Casting
+///
+/// We do TIMESTAMP -> {TIMESTAMP, VARCHAR}
+///
+////////////////////////////////////////////////////////////////////////////////
 
-struct CastTimestampToDate : public TypeSystem::Cast {
+struct CastTimestampToDate : public TypeSystem::CastHandleNull {
   bool SupportsTypes(const type::Type &from_type,
                      const type::Type &to_type) const override {
     return from_type.GetSqlType() == Timestamp::Instance() &&
@@ -39,8 +42,8 @@ struct CastTimestampToDate : public TypeSystem::Cast {
   }
 
   // Cast the given decimal value into the provided type
-  Value DoCast(CodeGen &codegen, const Value &value,
-               const type::Type &to_type) const override {
+  Value Impl(CodeGen &codegen, const Value &value,
+             const type::Type &to_type) const override {
     PL_ASSERT(SupportsTypes(value.GetType(), to_type));
 
     // TODO: Fix me
@@ -48,55 +51,65 @@ struct CastTimestampToDate : public TypeSystem::Cast {
         codegen.Const64(peloton::type::TimestampType::kUsecsPerDate);
     llvm::Value *date = codegen->CreateSDiv(value.GetValue(), usecs_per_date);
     llvm::Value *result = codegen->CreateTrunc(date, codegen.Int32Type());
-    return Value{to_type, result, nullptr, nullptr};
+
+    // We could be casting this non-nullable value to a nullable type
+    llvm::Value *null = to_type.nullable ? codegen.ConstBool(false) : nullptr;
+
+    // Return the result
+    return Value{to_type, result, nullptr, null};
   }
 };
 
-// Comparison
-struct CompareTimestamp : public TypeSystem::Comparison {
+////////////////////////////////////////////////////////////////////////////////
+///
+/// Comparisons
+///
+////////////////////////////////////////////////////////////////////////////////
+
+struct CompareTimestamp : public TypeSystem::SimpleComparisonHandleNull {
   bool SupportsTypes(const Type &left_type,
                      const Type &right_type) const override {
     return left_type == Timestamp::Instance() && left_type == right_type;
   }
 
-  Value DoCompareLt(CodeGen &codegen, const Value &left,
-                    const Value &right) const override {
+  Value CompareLtImpl(CodeGen &codegen, const Value &left,
+                      const Value &right) const override {
     auto *raw_val = codegen->CreateICmpSLT(left.GetValue(), right.GetValue());
     return Value{Boolean::Instance(), raw_val, nullptr, nullptr};
   }
 
-  Value DoCompareLte(CodeGen &codegen, const Value &left,
-                     const Value &right) const override {
+  Value CompareLteImpl(CodeGen &codegen, const Value &left,
+                       const Value &right) const override {
     auto *raw_val = codegen->CreateICmpSLE(left.GetValue(), right.GetValue());
     return Value{Boolean::Instance(), raw_val, nullptr, nullptr};
   }
 
-  Value DoCompareEq(CodeGen &codegen, const Value &left,
-                    const Value &right) const override {
+  Value CompareEqImpl(CodeGen &codegen, const Value &left,
+                      const Value &right) const override {
     auto *raw_val = codegen->CreateICmpEQ(left.GetValue(), right.GetValue());
     return Value{Boolean::Instance(), raw_val, nullptr, nullptr};
   }
 
-  Value DoCompareNe(CodeGen &codegen, const Value &left,
-                    const Value &right) const override {
+  Value CompareNeImpl(CodeGen &codegen, const Value &left,
+                      const Value &right) const override {
     auto *raw_val = codegen->CreateICmpNE(left.GetValue(), right.GetValue());
     return Value{Boolean::Instance(), raw_val, nullptr, nullptr};
   }
 
-  Value DoCompareGt(CodeGen &codegen, const Value &left,
-                    const Value &right) const override {
+  Value CompareGtImpl(CodeGen &codegen, const Value &left,
+                      const Value &right) const override {
     auto *raw_val = codegen->CreateICmpSGT(left.GetValue(), right.GetValue());
     return Value{Boolean::Instance(), raw_val, nullptr, nullptr};
   }
 
-  Value DoCompareGte(CodeGen &codegen, const Value &left,
-                     const Value &right) const override {
+  Value CompareGteImpl(CodeGen &codegen, const Value &left,
+                       const Value &right) const override {
     auto *raw_val = codegen->CreateICmpSGE(left.GetValue(), right.GetValue());
     return Value{Boolean::Instance(), raw_val, nullptr, nullptr};
   }
 
-  Value DoComparisonForSort(CodeGen &codegen, const Value &left,
-                            const Value &right) const override {
+  Value CompareForSortImpl(CodeGen &codegen, const Value &left,
+                           const Value &right) const override {
     // For integer comparisons, just subtract left from right and cast the
     // result to a 32-bit value
     llvm::Value *diff = codegen->CreateSub(left.GetValue(), right.GetValue());
@@ -106,33 +119,73 @@ struct CompareTimestamp : public TypeSystem::Comparison {
   }
 };
 
-// The list of types a SQL timestamp type can be implicitly casted to
-const std::vector<peloton::type::TypeId> kImplicitCastingTable = {
+////////////////////////////////////////////////////////////////////////////////
+///
+/// No-argument operations
+///
+////////////////////////////////////////////////////////////////////////////////
+
+struct Now : public TypeSystem::NoArgOperator {
+  Type ResultType(UNUSED_ATTRIBUTE const Type &val_type) const override {
+    return Timestamp::Instance();
+  }
+
+  Value Eval(CodeGen &codegen,
+             UNUSED_ATTRIBUTE const TypeSystem::InvocationContext &ctx)
+      const override {
+    auto *raw_ret = codegen.Call(DateFunctionsProxy::Now, {});
+    return Value{Timestamp::Instance(), raw_ret};
+  }
+};
+
+////////////////////////////////////////////////////////////////////////////////
+///
+/// Function tables
+///
+////////////////////////////////////////////////////////////////////////////////
+
+// Implicit casts
+std::vector<peloton::type::TypeId> kImplicitCastingTable = {
     peloton::type::TypeId::DATE, peloton::type::TypeId::TIMESTAMP};
 
-static CastTimestampToDate kTimestampToDate;
-static std::vector<TypeSystem::CastInfo> kExplicitCastingTable = {
+// Explicit casts
+CastTimestampToDate kTimestampToDate;
+std::vector<TypeSystem::CastInfo> kExplicitCastingTable = {
     {peloton::type::TypeId::TIMESTAMP, peloton::type::TypeId::DATE,
      kTimestampToDate}};
 
-static CompareTimestamp kCompareTimestamp;
-static std::vector<TypeSystem::ComparisonInfo> kComparisonTable = {
+// Comparisons
+CompareTimestamp kCompareTimestamp;
+std::vector<TypeSystem::ComparisonInfo> kComparisonTable = {
     {kCompareTimestamp}};
 
-static std::vector<TypeSystem::UnaryOpInfo> kUnaryOperatorTable = {};
-static std::vector<TypeSystem::BinaryOpInfo> kBinaryOperatorTable = {};
+// Unary operations
+std::vector<TypeSystem::UnaryOpInfo> kUnaryOperatorTable = {};
+
+// Binary operations
+std::vector<TypeSystem::BinaryOpInfo> kBinaryOperatorTable = {};
 
 // Nary operations
-static std::vector<TypeSystem::NaryOpInfo> kNaryOperatorTable = {};
+std::vector<TypeSystem::NaryOpInfo> kNaryOperatorTable = {};
+
+// No-arg operations
+Now kNow;
+std::vector<TypeSystem::NoArgOpInfo> kNoArgOperatorTable = {
+    {OperatorId::Now, kNow}};
 
 }  // anonymous namespace
 
-// Initialize the TIMESTAMP SQL type with the configured type system
+////////////////////////////////////////////////////////////////////////////////
+///
+/// TIMESTAMP type initialization and configuration
+///
+////////////////////////////////////////////////////////////////////////////////
+
 Timestamp::Timestamp()
     : SqlType(peloton::type::TypeId::TIMESTAMP),
       type_system_(kImplicitCastingTable, kExplicitCastingTable,
-                   kComparisonTable, kUnaryOperatorTable,
-                   kBinaryOperatorTable, kNaryOperatorTable) {}
+                   kComparisonTable, kUnaryOperatorTable, kBinaryOperatorTable,
+                   kNaryOperatorTable, kNoArgOperatorTable) {}
 
 Value Timestamp::GetMinValue(CodeGen &codegen) const {
   auto *raw_val = codegen.Const64(peloton::type::PELOTON_TIMESTAMP_MIN);

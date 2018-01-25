@@ -70,16 +70,20 @@ class CodeGen {
 
   /// Constant wrappers for bool, int8, int16, int32, int64, strings, and null
   llvm::Constant *ConstBool(bool val) const;
-  llvm::Constant *Const8(int8_t val) const;
-  llvm::Constant *Const16(int16_t val) const;
-  llvm::Constant *Const32(int32_t val) const;
-  llvm::Constant *Const64(int64_t val) const;
+  llvm::Constant *Const8(uint8_t val) const;
+  llvm::Constant *Const16(uint16_t val) const;
+  llvm::Constant *Const32(uint32_t val) const;
+  llvm::Constant *Const64(uint64_t val) const;
   llvm::Constant *ConstDouble(double val) const;
   llvm::Constant *ConstString(const std::string &s) const;
   llvm::Constant *Null(llvm::Type *type) const;
   llvm::Constant *NullPtr(llvm::PointerType *type) const;
   /// Wrapper for pointer for constant string
   llvm::Value *ConstStringPtr(const std::string &s) const;
+
+  llvm::Value *AllocateVariable(llvm::Type *type, const std::string &name);
+  llvm::Value *AllocateBuffer(llvm::Type *element_type, uint32_t num_elems,
+                              const std::string &name);
 
   // /Generate a call to the function with the provided name and arguments
   llvm::Value *CallFunc(llvm::Value *fn,
@@ -97,6 +101,7 @@ class CodeGen {
   //===--------------------------------------------------------------------===//
   llvm::Value *CallPrintf(const std::string &format,
                           const std::vector<llvm::Value *> &args);
+  llvm::Value *Sqrt(llvm::Value *val);
 
   //===--------------------------------------------------------------------===//
   // Arithmetic with overflow logic - These methods perform the desired math op,
@@ -136,6 +141,10 @@ class CodeGen {
   llvm::LLVMContext &GetContext() const { return code_context_.GetContext(); }
 
   CodeContext &GetCodeContext() const { return code_context_; }
+
+  FunctionBuilder *GetCurrentFunction() const {
+    return code_context_.GetCurrentFunction();
+  }
 
  private:
   friend class Hash;

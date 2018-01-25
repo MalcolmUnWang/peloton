@@ -105,7 +105,7 @@ TEST_F(TypeSQLTests, TypeLimitSQLTest) {
   }
 }
 
-void CheckQueryResult(std::vector<StatementResult> result,
+void CheckQueryResult(std::vector<ResultValue> result,
                       std::vector<std::string> expected,
                       size_t tuple_descriptor_size) {
   EXPECT_EQ(result.size(), expected.size());
@@ -113,7 +113,7 @@ void CheckQueryResult(std::vector<StatementResult> result,
     for (size_t j = 0; j < tuple_descriptor_size; j++) {
       int idx = i * tuple_descriptor_size + j;
       std::string s =
-          std::string(result[idx].second.begin(), result[idx].second.end());
+          std::string(result[idx].begin(), result[idx].end());
       EXPECT_EQ(s, expected[i]);
     }
   }
@@ -121,14 +121,17 @@ void CheckQueryResult(std::vector<StatementResult> result,
 
 TEST_F(TypeSQLTests, VarcharTest) {
   TestingSQLUtil::ExecuteSQLQuery("CREATE TABLE foo(name varchar(250));");
-  std::vector<std::string> names{"Alice", "Peter",  "Cathy",
-                                 "Bob",   "Alicia", "David"};
-  for (size_t i = 0; i < names.size(); i++) {
-    std::string sql = "INSERT INTO foo VALUES ('" + names[i] + "');";
+
+  for (const std::string &name :
+       {"Alice", "Peter", "Cathy", "Bob", "Alicia", "David"}) {
+    std::string sql = "INSERT INTO foo VALUES ('" + name + "');";
     TestingSQLUtil::ExecuteSQLQuery(sql);
   }
 
-  std::vector<StatementResult> result;
+  // NULL for good measure
+  TestingSQLUtil::ExecuteSQLQuery("INSERT INTO foo VALUES (NULL);");
+
+  std::vector<ResultValue> result;
   std::vector<FieldInfo> tuple_descriptor;
   std::string error_message;
   int rows_changed;

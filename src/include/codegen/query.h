@@ -14,15 +14,19 @@
 
 #include "codegen/code_context.h"
 #include "codegen/runtime_state.h"
+#include "codegen/query_parameters.h"
+#include "codegen/parameter_cache.h"
+#include "executor/executor_context.h"
 
 namespace peloton {
 
 namespace concurrency {
-class Transaction;
+class TransactionContext;
 }  // namespace concurrency
 
 namespace executor {
 class ExecutorContext;
+struct ExecutionResult;
 }  // namespace executor
 
 namespace planner {
@@ -30,6 +34,8 @@ class AbstractPlan;
 }  // namespace planner
 
 namespace codegen {
+
+class QueryResultConsumer;
 
 //===----------------------------------------------------------------------===//
 // A query statement that can be compiled
@@ -53,10 +59,21 @@ class Query {
   // this query.
   bool Prepare(const QueryFunctions &funcs);
 
-  // Execute th e query given the catalog manager and runtime/consumer state
-  // that is passed along to the query execution code.
-  void Execute(concurrency::Transaction &txn,
-               executor::ExecutorContext *executor_context, char *consumer_arg,
+  /**
+   * @brief Executes the compiled query.
+   *
+   * This function is **asynchronous** - it returns before execution completes,
+   * and invokes a user-provided callback on completion. It is the user's
+   * responsibility that the result consumer object has a lifetime as far as
+   * the return of the callback.
+   *
+   * @param executor_context Stores transaction and parameters.
+   * @param consumer Stores the result.
+   * @param on_complete The callback to be invoked when execution completes.
+   */
+  void Execute(std::unique_ptr<executor::ExecutorContext> executor_context,
+               QueryResultConsumer &consumer,
+               std::function<void(executor::ExecutionResult)> on_complete,
                RuntimeStats *stats = nullptr);
 
   // Return the query plan

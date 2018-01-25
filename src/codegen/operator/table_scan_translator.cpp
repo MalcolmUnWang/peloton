@@ -13,11 +13,15 @@
 #include "codegen/operator/table_scan_translator.h"
 
 #include "codegen/lang/if.h"
-#include "codegen/proxy/catalog_proxy.h"
+#include "codegen/proxy/executor_context_proxy.h"
+#include "codegen/proxy/storage_manager_proxy.h"
 #include "codegen/proxy/transaction_runtime_proxy.h"
+#include "codegen/proxy/runtime_functions_proxy.h"
+#include "codegen/proxy/zone_map_proxy.h"
 #include "codegen/type/boolean_type.h"
 #include "planner/seq_scan_plan.h"
 #include "storage/data_table.h"
+#include "storage/zone_map_manager.h"
 
 namespace peloton {
 namespace codegen {
@@ -37,7 +41,6 @@ TableScanTranslator::TableScanTranslator(const planner::SeqScanPlan &scan,
 
   // The restriction, if one exists
   const auto *predicate = GetScanPlan().GetPredicate();
-
   if (predicate != nullptr) {
     // If there is a predicate, prepare a translator for it
     context.Prepare(*predicate);
@@ -47,13 +50,6 @@ TableScanTranslator::TableScanTranslator(const planner::SeqScanPlan &scan,
       pipeline.InstallBoundaryAtOutput(this);
     }
   }
-
-  auto &codegen = GetCodeGen();
-  auto &runtime_state = context.GetRuntimeState();
-  selection_vector_id_ = runtime_state.RegisterState(
-      "scanSelVec",
-      codegen.ArrayType(codegen.Int32Type(), Vector::kDefaultVectorSize), true);
-
   LOG_DEBUG("Finished constructing TableScanTranslator ...");
 }
 
@@ -62,24 +58,38 @@ void TableScanTranslator::Produce() const {
   auto &codegen = GetCodeGen();
   auto &table = GetTable();
 
-  LOG_DEBUG("TableScan on [%u] starting to produce tuples ...", table.GetOid());
+  LOG_TRACE("TableScan on [%u] starting to produce tuples ...", table.GetOid());
 
   // Get the table instance from the database
-  llvm::Value *catalog_ptr = GetCatalogPtr();
+  llvm::Value *storage_manager_ptr = GetStorageManagerPtr();
   llvm::Value *db_oid = codegen.Const32(table.GetDatabaseOid());
   llvm::Value *table_oid = codegen.Const32(table.GetOid());
-  llvm::Value *table_ptr = codegen.Call(StorageManagerProxy::GetTableWithOid,
-                                        {catalog_ptr, db_oid, table_oid});
+  llvm::Value *table_ptr =
+      codegen.Call(StorageManagerProxy::GetTableWithOid,
+                   {storage_manager_ptr, db_oid, table_oid});
 
   // The selection vector for the scan
-  Vector sel_vec{LoadStateValue(selection_vector_id_),
-                 Vector::kDefaultVectorSize, codegen.Int32Type()};
+  auto *raw_vec = codegen.AllocateBuffer(
+      codegen.Int32Type(), Vector::kDefaultVectorSize, "scanSelVector");
+  Vector sel_vec{raw_vec, Vector::kDefaultVectorSize, codegen.Int32Type()};
 
-  // Generate the scan
+  auto predicate = const_cast<expression::AbstractExpression *>(
+      GetScanPlan().GetPredicate());
+  llvm::Value *predicate_ptr = codegen->CreateIntToPtr(
+      codegen.Const64((int64_t)predicate),
+      AbstractExpressionProxy::GetType(codegen)->getPointerTo());
+  size_t num_preds = 0;
+
+  auto *zone_map_manager = storage::ZoneMapManager::GetInstance();
+  if (predicate != nullptr && zone_map_manager->ZoneMapTableExists()) {
+    if (predicate->IsZoneMappable()) {
+      num_preds = predicate->GetNumberofParsedPredicates();
+    }
+  }
   ScanConsumer scan_consumer{*this, sel_vec};
-  table_.GenerateScan(codegen, table_ptr, sel_vec.GetCapacity(), scan_consumer);
-
-  LOG_DEBUG("TableScan on [%u] finished producing tuples ...", table.GetOid());
+  table_.GenerateScan(codegen, table_ptr, sel_vec.GetCapacity(), scan_consumer,
+                      predicate_ptr, num_preds);
+  LOG_TRACE("TableScan on [%u] finished producing tuples ...", table.GetOid());
 }
 
 // Get the stringified name of this scan
@@ -156,7 +166,7 @@ void TableScanTranslator::ScanConsumer::SetupRowBatch(
   // 2. Add the attribute accessors into the row batch
   for (oid_t col_idx = 0; col_idx < output_col_ids.size(); col_idx++) {
     auto *attribute = ais[output_col_ids[col_idx]];
-    LOG_DEBUG("Adding attribute '%s.%s' (%p) into row batch",
+    LOG_TRACE("Adding attribute '%s.%s' (%p) into row batch",
               scan_plan.GetTable()->GetName().c_str(), attribute->name.c_str(),
               attribute);
     batch.AddAttribute(attribute, &access[col_idx]);
@@ -166,7 +176,10 @@ void TableScanTranslator::ScanConsumer::SetupRowBatch(
 void TableScanTranslator::ScanConsumer::FilterRowsByVisibility(
     CodeGen &codegen, llvm::Value *tid_start, llvm::Value *tid_end,
     Vector &selection_vector) const {
-  llvm::Value *txn = translator_.GetCompilationContext().GetTransactionPtr();
+  llvm::Value *executor_context_ptr =
+      translator_.GetCompilationContext().GetExecutorContextPtr();
+  llvm::Value *txn = codegen.Call(ExecutorContextProxy::GetTransaction,
+                                  {executor_context_ptr});
   llvm::Value *raw_sel_vec = selection_vector.GetVectorPtr();
 
   // Invoke TransactionRuntime::PerformRead(...)
@@ -193,7 +206,7 @@ void TableScanTranslator::ScanConsumer::FilterRowsByPredicate(
 
   // First, check if the predicate is SIMDable
   const auto *predicate = GetPredicate();
-
+  LOG_DEBUG("Is Predicate SIMDable : %d", predicate->IsSIMDable());
   // Determine the attributes the predicate needs
   std::unordered_set<const planner::AttributeInfo *> used_attributes;
   predicate->GetUsedAttributes(used_attributes);

@@ -1,6 +1,12 @@
 # This list is required for static linking and exported to PelotonConfig.cmake
 set(Peloton_LINKER_LIBS "")
 
+# GCC 7 requires libatomic for cmpxchg16b instructions (used by libpg_query)
+if(CMAKE_COMPILER_IS_GNUCXX AND
+    (CMAKE_CXX_COMPILER_VERSION VERSION_EQUAL 7.0 OR CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 7.0))
+      list(APPEND Peloton_LINKER_LIBS "-latomic")
+endif()
+
 # ---[ Boost
 find_package(Boost 1.46 REQUIRED COMPONENTS system filesystem thread)
 include_directories(SYSTEM ${Boost_INCLUDE_DIR})
@@ -14,6 +20,13 @@ list(APPEND Peloton_LINKER_LIBS ${CMAKE_THREAD_LIBS_INIT})
 include("cmake/External/gflags.cmake")
 include_directories(SYSTEM ${GFLAGS_INCLUDE_DIRS})
 list(APPEND Peloton_LINKER_LIBS ${GFLAGS_LIBRARIES})
+
+# ---[ Cap'nProto
+include("cmake/External/capnproto.cmake")
+include_directories(SYSTEM ${CAPNP_INCLUDE_DIRS})
+list(APPEND Peloton_LINKER_LIBS ${CAPNP_LIBRARIES})
+# To include the CAPNP_GENERATE_CPP function from the capnproto installation
+include(cmake/CapnProtoMacros.cmake)
 
 # ---[ Google-protobuf
 include(cmake/ProtoBuf.cmake)
@@ -46,11 +59,14 @@ include_directories(SYSTEM ${PQXX_INCLUDE_DIRECTORIES})
 list(APPEND Peloton_LINKER_LIBS ${PQXX_LIBRARIES})
 
 # --[ Open SSL
-list(APPEND Peloton_LINKER_LIBS "-lssl")
+list(APPEND Peloton_LINKER_LIBS "-lssl -lcrypto")
 
 # --[ LLVM 3.7+
-find_package(LLVM 3.7 REQUIRED CONFIG)
+find_package(LLVM REQUIRED CONFIG)
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
+if (${LLVM_PACKAGE_VERSION} VERSION_LESS "3.7")
+    message( FATAL_ERROR "LLVM 3.7 or newer is required." )
+endif()
 llvm_map_components_to_libnames(LLVM_LIBRARIES core mcjit nativecodegen native)
 include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
 list(APPEND Peloton_LINKER_LIBS ${LLVM_LIBRARIES})

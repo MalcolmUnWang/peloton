@@ -6,7 +6,7 @@
 //
 // Identification: src/include/planner/abstract_plan.h
 //
-// Copyright (c) 2015-16, Carnegie Mellon University Database Group
+// Copyright (c) 2015-18, Carnegie Mellon University Database Group
 //
 //===----------------------------------------------------------------------===//
 
@@ -17,27 +17,30 @@
 #include <vector>
 
 #include "catalog/schema.h"
+#include "codegen/query_parameters_map.h"
 #include "common/printable.h"
 #include "planner/binding_context.h"
 #include "type/serializeio.h"
 #include "type/serializer.h"
-#include "type/types.h"
+#include "common/internal_types.h"
 #include "type/value.h"
+#include "util/hash_util.h"
 
 namespace peloton {
+
+namespace catalog {
+class Schema;
+}  // namespace catalog
 
 namespace executor {
 class AbstractExecutor;
 class LogicalTile;
-}
-
-namespace catalog {
-class Schema;
-}
+}  // namespace executor
 
 namespace expression {
 class AbstractExpression;
-}
+class Parameter;
+}  // namespace expression
 
 namespace planner {
 
@@ -76,7 +79,7 @@ class AbstractPlan : public Printable {
   // Setting values of the parameters in the prepare statement
   virtual void SetParameterValues(std::vector<type::Value> *values);
   
-  // Get the estimated cardinalities of this plan
+  // Get the estimated cardinality of this plan
   int GetCardinality() const { return estimated_cardinality_; }
   
   // TODO: This is only for testing now. When the optimizer is ready, we should
@@ -98,10 +101,10 @@ class AbstractPlan : public Printable {
   }
 
   virtual void GetOutputColumns(std::vector<oid_t> &columns UNUSED_ATTRIBUTE)
-      const { return; }
+      const { }
 
   // Get a string representation for debugging
-  const std::string GetInfo() const;
+  const std::string GetInfo() const override;
 
   virtual std::unique_ptr<AbstractPlan> Copy() const = 0;
 
@@ -120,11 +123,26 @@ class AbstractPlan : public Printable {
   virtual bool DeserializeFrom(SerializeInput &input UNUSED_ATTRIBUTE) {
     return false;
   }
-  virtual int SerializeSize() { return 0; }
+  virtual int SerializeSize() const { return 0; }
+
+  virtual hash_t Hash() const;
+
+  virtual bool operator==(const AbstractPlan &rhs) const;
+  virtual bool operator!=(const AbstractPlan &rhs) const {
+    return !(*this == rhs);
+  }
+
+  virtual void VisitParameters(codegen::QueryParametersMap &map,
+      std::vector<peloton::type::Value> &values,
+      const std::vector<peloton::type::Value> &values_from_user) {
+    for (auto &child : GetChildren()) {
+      child->VisitParameters(map, values, values_from_user);
+    }
+  }
 
  protected:
   // only used by its derived classes (when deserialization)
-  AbstractPlan *Parent() { return parent_; }
+  AbstractPlan *Parent() const { return parent_; }
 
  private:
   // A plan node can have multiple children
@@ -138,6 +156,21 @@ class AbstractPlan : public Printable {
 
  private:
   DISALLOW_COPY_AND_MOVE(AbstractPlan);
+};
+
+class Equal {
+ public:
+  bool operator()(const std::shared_ptr<planner::AbstractPlan> &a,
+                  const std::shared_ptr<planner::AbstractPlan> &b) const {
+    return *a.get() == *b.get();
+  }
+};
+
+class Hash {
+ public:
+  size_t operator()(const std::shared_ptr<planner::AbstractPlan> &plan) const {
+    return static_cast<size_t>(plan->Hash());
+  }
 };
 
 }  // namespace planner

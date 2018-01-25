@@ -13,7 +13,7 @@
 #pragma once
 
 #include "planner/abstract_plan.h"
-#include "type/types.h"
+#include "common/internal_types.h"
 
 namespace peloton {
 
@@ -41,6 +41,13 @@ class DeletePlan : public AbstractPlan {
 
   std::unique_ptr<AbstractPlan> Copy() const override {
     return std::unique_ptr<AbstractPlan>(new DeletePlan(target_table_));
+  }
+
+  hash_t Hash() const override;
+
+  bool operator==(const AbstractPlan &rhs) const override;
+  bool operator!=(const AbstractPlan &rhs) const override {
+    return !(*this == rhs);
   }
 
  private:

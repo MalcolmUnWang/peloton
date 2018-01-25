@@ -13,8 +13,6 @@
 #pragma once
 
 #include "codegen/aggregation.h"
-#include "codegen/compilation_context.h"
-#include "codegen/consumer_context.h"
 #include "codegen/oa_hash_table.h"
 #include "codegen/operator/operator_translator.h"
 #include "codegen/updateable_storage.h"
@@ -85,17 +83,22 @@ class HashGroupByTranslator : public OperatorTranslator {
   class ConsumerProbe : public HashTable::ProbeCallback {
    public:
     // Constructor
-    ConsumerProbe(const Aggregation &aggregation,
-                  const std::vector<codegen::Value> &next_vals);
+    ConsumerProbe(CompilationContext &context, const Aggregation &aggregation,
+                  const std::vector<codegen::Value> &next_vals,
+                  const std::vector<codegen::Value> &grouping_keys);
 
     // The callback
     void ProcessEntry(CodeGen &codegen, llvm::Value *data_area) const override;
 
    private:
+    // Compilation Context need for code generation and runtime state
+    CompilationContext &context_;
     // The guy that handles the computation of the aggregates
     const Aggregation &aggregation_;
     // The next value to merge into the existing aggregates
     const std::vector<codegen::Value> &next_vals_;
+    // The key used for the Group By, will be needed for distinct aggregations
+    const std::vector<codegen::Value> grouping_keys_;
   };
 
   //===--------------------------------------------------------------------===//
@@ -107,7 +110,8 @@ class HashGroupByTranslator : public OperatorTranslator {
    public:
     // Constructor
     ConsumerInsert(const Aggregation &aggregation,
-                   const std::vector<codegen::Value> &initial_vals);
+                   const std::vector<codegen::Value> &initial_vals,
+                   const std::vector<codegen::Value> &grouping_keys);
 
     // StoreValue the initial values of the aggregates into the provided storage
     void StoreValue(CodeGen &codegen, llvm::Value *data_space) const override;
@@ -119,6 +123,8 @@ class HashGroupByTranslator : public OperatorTranslator {
     const Aggregation &aggregation_;
     // The list of initial values to use as aggregates
     const std::vector<codegen::Value> &initial_vals_;
+    // The key used for the Group By, will be needed for distinct aggregations
+    const std::vector<codegen::Value> grouping_keys_;
   };
 
   //===--------------------------------------------------------------------===//
@@ -186,12 +192,6 @@ class HashGroupByTranslator : public OperatorTranslator {
 
   // The hash table
   OAHashTable hash_table_;
-
-  // The ID of the output vector (for vectorized result production)
-  RuntimeState::StateID output_vector_id_;
-
-  // The ID of the group-prefetch vector, if we're prefetching
-  RuntimeState::StateID prefetch_vector_id_;
 
   // The aggregation handler
   Aggregation aggregation_;

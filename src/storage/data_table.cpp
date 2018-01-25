@@ -6,7 +6,7 @@
 //
 // Identification: src/storage/data_table.cpp
 //
-// Copyright (c) 2015-16, Carnegie Mellon University Database Group
+// Copyright (c) 2015-17, Carnegie Mellon University Database Group
 //
 //===----------------------------------------------------------------------===//
 
@@ -21,7 +21,7 @@
 #include "common/exception.h"
 #include "common/logger.h"
 #include "common/platform.h"
-#include "concurrency/transaction.h"
+#include "concurrency/transaction_context.h"
 #include "concurrency/transaction_manager_factory.h"
 #include "gc/gc_manager_factory.h"
 #include "index/index.h"
@@ -57,13 +57,15 @@ size_t DataTable::default_active_indirection_array_count_ = 1;
 DataTable::DataTable(catalog::Schema *schema, const std::string &table_name,
                      const oid_t &database_oid, const oid_t &table_oid,
                      const size_t &tuples_per_tilegroup, const bool own_schema,
-                     const bool adapt_table, const bool is_catalog)
-    : AbstractTable(table_oid, schema, own_schema),
+                     const bool adapt_table, const bool is_catalog,
+                     const peloton::LayoutType layout_type)
+    : AbstractTable(table_oid, schema, own_schema, layout_type),
       database_oid(database_oid),
       table_name(table_name),
       tuples_per_tilegroup_(tuples_per_tilegroup),
       adapt_table_(adapt_table),
       trigger_list_(new trigger::TriggerList()) {
+
   // Init default partition
   auto col_count = schema->GetColumnCount();
   for (oid_t col_itr = 0; col_itr < col_count; col_itr++) {
@@ -126,9 +128,9 @@ DataTable::~DataTable() {
 // TUPLE HELPER OPERATIONS
 //===--------------------------------------------------------------------===//
 
-bool DataTable::CheckNotNulls(const storage::Tuple *tuple,
+bool DataTable::CheckNotNulls(const AbstractTuple *tuple,
                               oid_t column_idx) const {
-  if (tuple->IsNull(column_idx)) {
+  if (tuple->GetValue(column_idx).IsNull()) {
     LOG_TRACE(
         "%u th attribute in the tuple was NULL. It is non-nullable "
         "attribute.",
@@ -138,9 +140,7 @@ bool DataTable::CheckNotNulls(const storage::Tuple *tuple,
   return true;
 }
 
-bool DataTable::CheckConstraints(const storage::Tuple *tuple) const {
-  PL_ASSERT(schema->GetColumnCount() == tuple->GetColumnCount());
-
+bool DataTable::CheckConstraints(const AbstractTuple *tuple) const {
   // For each column in the table, check to see whether they have
   // any constraints. Then if they do, make sure that the
   // given tuple does not violate them.
@@ -223,13 +223,7 @@ bool DataTable::CheckConstraints(const storage::Tuple *tuple) const {
 // in-place update at executor level.
 // however, when performing insert, we have to copy data immediately,
 // and the argument cannot be set to nullptr.
-ItemPointer DataTable::GetEmptyTupleSlot(const storage::Tuple *tuple,
-                                         bool check_constraint) {
-  // assert(tuple);
-  if (check_constraint && tuple != nullptr) {
-    if (CheckConstraints(tuple) == false) return INVALID_ITEMPOINTER;
-  }
-
+ItemPointer DataTable::GetEmptyTupleSlot(const storage::Tuple *tuple) {
   //=============== garbage collection==================
   // check if there are recycled tuple slots
   auto &gc_manager = gc::GCManagerFactory::GetInstance();
@@ -313,8 +307,13 @@ ItemPointer DataTable::AcquireVersion() {
 
 bool DataTable::InstallVersion(const AbstractTuple *tuple,
                                const TargetList *targets_ptr,
-                               concurrency::Transaction *transaction,
+                               concurrency::TransactionContext *transaction,
                                ItemPointer *index_entry_ptr) {
+  if (CheckConstraints(tuple) == false) {
+    LOG_TRACE("InsertVersion(): Constraint violated");
+    return false;
+  }
+
   // Index checks and updates
   if (InsertInSecondaryIndexes(tuple, targets_ptr, transaction,
                                index_entry_ptr) == false) {
@@ -325,7 +324,7 @@ bool DataTable::InstallVersion(const AbstractTuple *tuple,
 }
 
 ItemPointer DataTable::InsertTuple(const storage::Tuple *tuple,
-                                   concurrency::Transaction *transaction,
+                                   concurrency::TransactionContext *transaction,
                                    ItemPointer **index_entry_ptr) {
   ItemPointer location = GetEmptyTupleSlot(tuple);
   if (location.block == INVALID_OID) {
@@ -341,8 +340,13 @@ ItemPointer DataTable::InsertTuple(const storage::Tuple *tuple,
 }
 
 bool DataTable::InsertTuple(const AbstractTuple *tuple,
-    ItemPointer location, concurrency::Transaction *transaction,
+    ItemPointer location, concurrency::TransactionContext *transaction,
     ItemPointer **index_entry_ptr) {
+  if (CheckConstraints(tuple) == false) {
+    LOG_TRACE("InsertTuple(): Constraint violated");
+    return false;
+  }
+
   // the upper layer may not pass a index_entry_ptr (default value: nullptr)
   // into the function.
   // in this case, we have to create a temp_ptr to hold the content.
@@ -406,7 +410,7 @@ ItemPointer DataTable::InsertTuple(const storage::Tuple *tuple) {
  */
 bool DataTable::InsertInIndexes(const AbstractTuple *tuple,
                                 ItemPointer location,
-                                concurrency::Transaction *transaction,
+                                concurrency::TransactionContext *transaction,
                                 ItemPointer **index_entry_ptr) {
   int index_count = GetIndexCount();
 
@@ -486,7 +490,7 @@ bool DataTable::InsertInIndexes(const AbstractTuple *tuple,
 
 bool DataTable::InsertInSecondaryIndexes(const AbstractTuple *tuple,
                                          const TargetList *targets_ptr,
-                                         concurrency::Transaction *transaction,
+                                         concurrency::TransactionContext *transaction,
                                          ItemPointer *index_entry_ptr) {
   int index_count = GetIndexCount();
   // Transform the target list into a hash set
@@ -700,7 +704,7 @@ oid_t DataTable::AddDefaultTileGroup(const size_t &active_tile_group_id) {
   oid_t tile_group_id = INVALID_OID;
 
   // Figure out the partitioning for given tilegroup layout
-  column_map = GetTileGroupLayout((LayoutType)peloton_layout_mode);
+  column_map = GetTileGroupLayout();
 
   // Create a tile group with that partitioning
   std::shared_ptr<TileGroup> tile_group(GetTileGroupWithLayout(column_map));
@@ -1202,10 +1206,34 @@ trigger::TriggerList *DataTable::GetTriggerList() {
   return trigger_list_.get();
 }
 
-void DataTable::UpdateTriggerListFromCatalog(concurrency::Transaction *txn) {
+void DataTable::UpdateTriggerListFromCatalog(concurrency::TransactionContext *txn) {
   trigger_list_ =
       catalog::TriggerCatalog::GetInstance().GetTriggers(table_oid, txn);
 }
 
-}  // namespace storage
-}  // namespace peloton
+hash_t DataTable::Hash() const {
+  auto oid = GetOid();
+  hash_t hash = HashUtil::Hash(&oid);
+  hash = HashUtil::CombineHashes(hash, HashUtil::HashBytes(GetName().c_str(),
+                                                           GetName().length()));
+  auto db_oid = GetOid();
+  hash = HashUtil::CombineHashes(hash, HashUtil::Hash(&db_oid));
+  return hash;
+}
+
+bool DataTable::Equals(const storage::DataTable &other) const {
+  return (*this == other);
+}
+
+bool DataTable::operator==(const DataTable &rhs) const {
+  if (GetName() != rhs.GetName())
+    return false;
+  if (GetDatabaseOid() != rhs.GetDatabaseOid())
+    return false;
+  if (GetOid() != rhs.GetOid())
+    return false;
+  return true;
+}
+
+}  // End storage namespace
+}  // End peloton namespace

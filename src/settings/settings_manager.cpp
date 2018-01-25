@@ -20,16 +20,22 @@
 #include "type/value_factory.h"
 #include "util/stringbox_util.h"
 
-#define __SETTING_GFLAGS_DECLARE__
+// This will expand to define all the settings defined in settings.h
+// using GFlag's DEFINE_...() macro. See settings_macro.h.
+#define __SETTING_GFLAGS_DEFINE__
 #include "settings/settings_macro.h"
 #include "settings/settings.h"
-#undef __SETTING_GFLAGS_DECLARE__
+#undef __SETTING_GFLAGS_DEFINE__
 
 namespace peloton {
 namespace settings {
 
 int32_t SettingsManager::GetInt(SettingId id) {
   return GetInstance().GetValue(id).GetAs<int32_t>();
+}
+
+double SettingsManager::GetDouble(SettingId id) {
+  return GetInstance().GetValue(id).GetAs<double>();
 }
 
 bool SettingsManager::GetBool(SettingId id) {
@@ -157,10 +163,13 @@ bool SettingsManager::InsertIntoCatalog(const Param &param) {
 SettingsManager::SettingsManager() {
   catalog_initialized_ = false;
   pool_.reset(new type::EphemeralPool());
-#define __SETTING_DEFINE__
-#include "settings/settings_macro.h"
-#include "settings/settings.h"
-#undef __SETTING_DEFINE__
+
+  // This will expand to invoke SettingsManager::DefineSetting on
+  // all of the settings defined in settings.h. See settings_macro.h.
+  #define __SETTING_DEFINE__
+  #include "settings/settings_macro.h"
+  #include "settings/settings.h"
+  #undef __SETTING_DEFINE__
 }
 
 }  // namespace settings

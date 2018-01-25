@@ -80,7 +80,7 @@ if(UNIX OR APPLE)
 endif()
 
 # ---[ Warnings
-peloton_warnings_disable(CMAKE_CXX_FLAGS -Wno-strict-aliasing)
+peloton_warnings_disable(CMAKE_CXX_FLAGS -Wno-strict-aliasing -Wno-implicit-fallthrough)
 
 # Turn on sanitizers if necessary.
 if(USE_SANITIZER)
@@ -125,6 +125,9 @@ if (COVERALLS)
 
     coveralls_setup("${COVERAGE_SRCS}" ON)
 endif()
+
+# data directory for SSL
+set(DATA_DIR "${PROJECT_SOURCE_DIR}/data")
 
 # ---[ Config generation
 configure_file(cmake/Templates/peloton_config.h.in "${PROJECT_BINARY_DIR}/peloton_config.h")

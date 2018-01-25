@@ -6,7 +6,7 @@
 //
 // Identification: src/planner/index_scan_plan.cpp
 //
-// Copyright (c) 2015-16, Carnegie Mellon University Database Group
+// Copyright (c) 2015-17, Carnegie Mellon University Database Group
 //
 //===----------------------------------------------------------------------===//
 
@@ -14,7 +14,7 @@
 #include "expression/constant_value_expression.h"
 #include "expression/expression_util.h"
 #include "storage/data_table.h"
-#include "type/types.h"
+#include "common/internal_types.h"
 
 namespace peloton {
 namespace planner {
